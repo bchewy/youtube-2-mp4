@@ -8,7 +8,7 @@ PGP Key: https://github.com/ibnaleem/ibnaleem/blob/main/public_key.asc
 
 import os
 from tqdm import tqdm
-from pytube import YouTube
+from pytubefix import YouTube
 from datetime import datetime
 from rich.console import Console
 
@@ -29,6 +29,8 @@ class YouTubeDownloader:
         self.streams = None
         self.console = Console()
         self.multi_vid_array = []
+        self.progress_bar = None
+        self.downloaded_bytes = 0
 
     def styled_input(self, prompt: str, style=None):
         if style:
@@ -40,14 +42,27 @@ class YouTubeDownloader:
     def get_video_url(self) -> None:
         url = self.styled_input("Enter YouTube Video URL: ", style="bold blue")
 
-        if not (url.startswith("https://www.youtube.com") or url.startswith("youtube.com")):
+        # Normalize URL - add https:// if missing
+        if url.startswith("youtube.com") or url.startswith("www.youtube.com"):
+            url = "https://" + url
+        elif not url.startswith("http"):
             self.console.print("[bold red]Invalid URL. Please try again.[/bold red]")
             self.get_video_url()
+            return
 
-        else:
+        if not ("youtube.com" in url or "youtu.be" in url):
+            self.console.print("[bold red]Invalid URL. Please try again.[/bold red]")
+            self.get_video_url()
+            return
+
+        try:
             self.url = url
             self.youtube = YouTube(self.url, on_progress_callback=self.on_progress)
             self.streams = self.youtube.streams
+        except Exception as e:
+            self.console.print(f"[bold red]Error loading video: {str(e)}[/bold red]")
+            self.console.print("[bold yellow]If this persists, try updating pytubefix: pip install --upgrade pytubefix[/bold yellow]")
+            self.get_video_url()
 
     def main_menu(self):
         while True:
@@ -86,14 +101,38 @@ class YouTubeDownloader:
 
     def on_progress(self, stream, chunk, bytes_remaining):
         total_size = stream.filesize
-        _ = total_size - bytes_remaining
-        for i in tqdm(range(total_size)):
-            pass
+        if self.progress_bar is None:
+            self.progress_bar = tqdm(total=total_size, unit='B', unit_scale=True, desc="Downloading")
+        
+        chunk_size = len(chunk)
+        self.downloaded_bytes += chunk_size
+        self.progress_bar.update(chunk_size)
+        
+        if bytes_remaining == 0:
+            self.progress_bar.close()
+            self.progress_bar = None
+            self.downloaded_bytes = 0
 
-    def convert_to_english_date(self, date_string: str) -> str:
-        date_object = datetime.strptime(date_string, '%Y-%m-%d %H:%M:%S')
+    def convert_to_english_date(self, date_input) -> str:
+        # Handle both datetime objects and strings
+        if isinstance(date_input, datetime):
+            date_object = date_input
+        else:
+            date_string = str(date_input)
+            # Remove timezone offset if present (e.g., "-07:00" or "+00:00")
+            import re
+            date_string = re.sub(r'[+-]\d{2}:\d{2}$', '', date_string).strip()
+            # Try parsing with seconds first, then without
+            try:
+                date_object = datetime.strptime(date_string, '%Y-%m-%d %H:%M:%S')
+            except ValueError:
+                try:
+                    date_object = datetime.strptime(date_string, '%Y-%m-%d %H:%M')
+                except ValueError:
+                    # Just parse the date part
+                    date_object = datetime.strptime(date_string.split()[0], '%Y-%m-%d')
+        
         english_date = date_object.strftime('%B %d %Y')
-
         return english_date
 
     def download_single_video(self, args: str = None):
@@ -109,7 +148,7 @@ class YouTubeDownloader:
         )
         video_length = self.convert_seconds_to_hms(self.youtube.length)
         video_views = "{:,}".format(self.youtube.views)
-        pub_date = self.convert_to_english_date(str(self.youtube.publish_date))
+        pub_date = self.convert_to_english_date(self.youtube.publish_date)
 
         self.console.print(
             f"Views: {video_views}      Length: {video_length}      Published on {pub_date}",
@@ -118,12 +157,13 @@ class YouTubeDownloader:
             style="bold blue",
         )
         proceed = self.styled_input("Is this correct? (y/n) ", style="bold red")
-        if proceed.lower() != "y" and "n":
+        if proceed.lower() != "y" and proceed.lower() != "n":
             self.console.print("[bold red]Invalid choice. Please try again.[/bold red]")
             proceed = self.styled_input("Is this correct? (y/n) ", style="bold red")
-        elif proceed.lower() == "n":
+        if proceed.lower() == "n":
             self.download_single_video()
-        else:
+            return
+        elif proceed.lower() == "y":
             path = self.styled_input("Enter download path: ", style="bold red")
             highest_resolution_stream.download(path, filename=f"{self.youtube.title}.mp4")
 
@@ -147,11 +187,22 @@ class YouTubeDownloader:
                         self.multi_vid_array.append(url)
                     
                     for url in self.multi_vid_array:
-                        self.url = url
-                        self.youtube = YouTube(self.url, on_progress_callback=self.on_progress)
-                        self.streams = self.youtube.streams
-
-                        self.download_single_video("args")
+                        # Normalize URL
+                        url = url.strip()
+                        if url.startswith("youtube.com") or url.startswith("www.youtube.com"):
+                            url = "https://" + url
+                        elif not url.startswith("http"):
+                            self.console.print(f"[bold red]Skipping invalid URL: {url}[/bold red]")
+                            continue
+                        
+                        try:
+                            self.url = url
+                            self.youtube = YouTube(self.url, on_progress_callback=self.on_progress)
+                            self.streams = self.youtube.streams
+                            self.download_single_video("args")
+                        except Exception as e:
+                            self.console.print(f"[bold red]Error with video {url}: {str(e)}[/bold red]")
+                            continue
 
             except TypeError:
                 self.console.print("Invalid input. Please provide an integer value greater than 0.", style="bold red")
